@@ -355,17 +355,26 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<ReminderEntity>().ToTable("reminders");
 
-        modelBuilder.Entity<ReminderEntity>().HasKey(r => r.Id);
+modelBuilder.Entity<ReminderEntity>().HasKey(r => r.Id);
 
-        modelBuilder.Entity<ReminderEntity>().Property(r => r.Id).HasColumnName("id");
-        modelBuilder.Entity<ReminderEntity>().Property(r => r.UserEmail).HasColumnName("user_email");
-        modelBuilder.Entity<ReminderEntity>().Property(r => r.ReminderDate).HasColumnName("reminder_date");
-        modelBuilder.Entity<ReminderEntity>().Property(r => r.Title).HasColumnName("title");
-        modelBuilder.Entity<ReminderEntity>().Property(r => r.Description).HasColumnName("description");
-        modelBuilder.Entity<ReminderEntity>().Property(r => r.CreatedAt).HasColumnName("created_at");
+modelBuilder.Entity<ReminderEntity>().Property(r => r.Id).HasColumnName("id");
+modelBuilder.Entity<ReminderEntity>().Property(r => r.UserEmail).HasColumnName("user_email");
 
-        modelBuilder.Entity<ReminderEntity>().HasIndex(r => r.UserEmail);
-        modelBuilder.Entity<ReminderEntity>().HasIndex(r => new { r.UserEmail, r.ReminderDate });
+modelBuilder.Entity<ReminderEntity>()
+    .Property(r => r.ReminderDate)
+    .HasColumnName("reminder_date")
+    .HasColumnType("date");
+
+modelBuilder.Entity<ReminderEntity>().Property(r => r.Title).HasColumnName("title");
+modelBuilder.Entity<ReminderEntity>().Property(r => r.Description).HasColumnName("description");
+
+modelBuilder.Entity<ReminderEntity>()
+    .Property(r => r.CreatedAt)
+    .HasColumnName("created_at")
+    .HasColumnType("timestamp with time zone");
+
+modelBuilder.Entity<ReminderEntity>().HasIndex(r => r.UserEmail);
+modelBuilder.Entity<ReminderEntity>().HasIndex(r => new { r.UserEmail, r.ReminderDate });
     }
 }
 
