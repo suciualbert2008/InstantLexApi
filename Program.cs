@@ -23,6 +23,28 @@ app.UseCors("AllowInstantLex");
 
 app.MapGet("/", () => "InstantLex API is running.");
 
+app.MapGet("/api/test-db", async (AppDbContext db) =>
+{
+    try
+    {
+        bool canConnect = await db.Database.CanConnectAsync();
+        int userCount = await db.Users.CountAsync();
+        int reminderCount = await db.Reminders.CountAsync();
+
+        return Results.Ok(new
+        {
+            success = true,
+            canConnect,
+            userCount,
+            reminderCount
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(ex.ToString());
+    }
+});
+
 app.MapPost("/api/auth/register", async (RegisterRequest request, AppDbContext db) =>
 {
     string firstName = request.FirstName.Trim();
@@ -272,7 +294,16 @@ app.MapDelete("/api/reminders/clear/{email}", async (string email, AppDbContext 
     return Results.Ok(new ApiResponse(true, "All reminders cleared."));
 });
 
-app.Run();
+var port = Environment.GetEnvironmentVariable("PORT");
+
+if (!string.IsNullOrWhiteSpace(port))
+{
+    app.Run($"http://0.0.0.0:{port}");
+}
+else
+{
+    app.Run();
+}
 
 public class AppDbContext : DbContext
 {
@@ -302,16 +333,19 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<UserEntity>().HasIndex(u => u.Email).IsUnique();
 
-	modelBuilder.Entity<ReminderEntity>().ToTable("reminders");
+        modelBuilder.Entity<ReminderEntity>().ToTable("reminders");
 
-	modelBuilder.Entity<ReminderEntity>().HasKey(r => r.Id);
+        modelBuilder.Entity<ReminderEntity>().HasKey(r => r.Id);
 
-	modelBuilder.Entity<ReminderEntity>().Property(r => r.Id).HasColumnName("id");
-	modelBuilder.Entity<ReminderEntity>().Property(r => r.UserEmail).HasColumnName("user_email");
-	modelBuilder.Entity<ReminderEntity>().Property(r => r.ReminderDate).HasColumnName("reminder_date");
-	modelBuilder.Entity<ReminderEntity>().Property(r => r.Title).HasColumnName("title");
-	modelBuilder.Entity<ReminderEntity>().Property(r => r.Description).HasColumnName("description");
-	modelBuilder.Entity<ReminderEntity>().Property(r => r.CreatedAt).HasColumnName("created_at");
+        modelBuilder.Entity<ReminderEntity>().Property(r => r.Id).HasColumnName("id");
+        modelBuilder.Entity<ReminderEntity>().Property(r => r.UserEmail).HasColumnName("user_email");
+        modelBuilder.Entity<ReminderEntity>().Property(r => r.ReminderDate).HasColumnName("reminder_date");
+        modelBuilder.Entity<ReminderEntity>().Property(r => r.Title).HasColumnName("title");
+        modelBuilder.Entity<ReminderEntity>().Property(r => r.Description).HasColumnName("description");
+        modelBuilder.Entity<ReminderEntity>().Property(r => r.CreatedAt).HasColumnName("created_at");
+
+        modelBuilder.Entity<ReminderEntity>().HasIndex(r => r.UserEmail);
+        modelBuilder.Entity<ReminderEntity>().HasIndex(r => new { r.UserEmail, r.ReminderDate });
     }
 }
 
@@ -326,6 +360,16 @@ public class UserEntity
     public string Profile { get; set; } = "";
     public string CountryOfOrigin { get; set; } = "";
     public string EducationalInstitute { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class ReminderEntity
+{
+    public int Id { get; set; }
+    public string UserEmail { get; set; } = "";
+    public DateTime ReminderDate { get; set; }
+    public string Title { get; set; } = "";
+    public string? Description { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 
@@ -372,21 +416,6 @@ public record UserDto(
     string EducationalInstitute
 );
 
-public record ApiResponse(
-    bool Success,
-    string Message
-);
-
-public class ReminderEntity
-{
-    public int Id { get; set; }
-    public string UserEmail { get; set; } = "";
-    public DateTime ReminderDate { get; set; }
-    public string Title { get; set; } = "";
-    public string? Description { get; set; }
-    public DateTime CreatedAt { get; set; }
-}
-
 public record CreateReminderRequest(
     string UserEmail,
     DateTime ReminderDate,
@@ -400,4 +429,9 @@ public record ReminderDto(
     DateTime ReminderDate,
     string Title,
     string Description
+);
+
+public record ApiResponse(
+    bool Success,
+    string Message
 );
