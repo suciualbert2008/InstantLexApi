@@ -1,0 +1,6 @@
+@InstantLexApi_HostAddress = http://localhost:5053
+
+GET {{InstantLexApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

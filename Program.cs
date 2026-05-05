@@ -1,0 +1,283 @@
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddDbContext<AppDbContext>(options =>
+{
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"));
+});
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowInstantLex", policy =>
+    {
+        policy.AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowAnyOrigin();
+    });
+});
+
+var app = builder.Build();
+
+app.UseCors("AllowInstantLex");
+
+app.MapGet("/", () => "InstantLex API is running.");
+
+app.MapPost("/api/auth/register", async (RegisterRequest request, AppDbContext db) =>
+{
+    string firstName = request.FirstName.Trim();
+    string lastName = request.LastName.Trim();
+    string email = request.Email.Trim().ToLower();
+    string password = request.Password;
+    string cls = request.Class.Trim();
+    string profile = request.Profile.Trim();
+    string country = request.CountryOfOrigin.Trim();
+    string institute = request.EducationalInstitute.Trim();
+
+    if (string.IsNullOrWhiteSpace(firstName) ||
+        string.IsNullOrWhiteSpace(lastName) ||
+        string.IsNullOrWhiteSpace(email) ||
+        string.IsNullOrWhiteSpace(password) ||
+        string.IsNullOrWhiteSpace(cls) ||
+        string.IsNullOrWhiteSpace(profile) ||
+        string.IsNullOrWhiteSpace(country) ||
+        string.IsNullOrWhiteSpace(institute))
+    {
+        return Results.BadRequest(new ApiResponse(false, "Please fill in all mandatory fields."));
+    }
+
+    if (!email.Contains("@"))
+    {
+        return Results.BadRequest(new ApiResponse(false, "Please enter a valid email address."));
+    }
+
+    if (password.Length < 6)
+    {
+        return Results.BadRequest(new ApiResponse(false, "Password must be at least 6 characters."));
+    }
+
+    bool exists = await db.Users.AnyAsync(u => u.Email == email);
+
+    if (exists)
+    {
+        return Results.Conflict(new ApiResponse(false, "An account with this email already exists."));
+    }
+
+    var user = new UserEntity
+    {
+        FirstName = firstName,
+        LastName = lastName,
+        Email = email,
+        PasswordHash = BCrypt.Net.BCrypt.HashPassword(password),
+        Class = cls,
+        Profile = profile,
+        CountryOfOrigin = country,
+        EducationalInstitute = institute,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    db.Users.Add(user);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ApiResponse(true, "Account created successfully."));
+});
+
+app.MapPost("/api/auth/login", async (LoginRequest request, AppDbContext db) =>
+{
+    string email = request.Email.Trim().ToLower();
+    string password = request.Password;
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+    if (user == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    bool passwordOk = BCrypt.Net.BCrypt.Verify(password, user.PasswordHash);
+
+    if (!passwordOk)
+    {
+        return Results.Unauthorized();
+    }
+
+    var result = new UserDto(
+        user.FirstName,
+        user.LastName,
+        user.Email,
+        "",
+        user.Class,
+        user.Profile,
+        user.CountryOfOrigin,
+        user.EducationalInstitute
+    );
+
+    return Results.Ok(result);
+});
+
+app.MapPut("/api/user/update", async (UpdateUserRequest request, AppDbContext db) =>
+{
+    string email = request.Email.Trim().ToLower();
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+    if (user == null)
+    {
+        return Results.NotFound(new ApiResponse(false, "User not found."));
+    }
+
+    if (string.IsNullOrWhiteSpace(request.FirstName) ||
+        string.IsNullOrWhiteSpace(request.LastName) ||
+        string.IsNullOrWhiteSpace(request.Class) ||
+        string.IsNullOrWhiteSpace(request.Profile) ||
+        string.IsNullOrWhiteSpace(request.CountryOfOrigin) ||
+        string.IsNullOrWhiteSpace(request.EducationalInstitute))
+    {
+        return Results.BadRequest(new ApiResponse(false, "Please fill in all mandatory fields."));
+    }
+
+    user.FirstName = request.FirstName.Trim();
+    user.LastName = request.LastName.Trim();
+    user.Class = request.Class.Trim();
+    user.Profile = request.Profile.Trim();
+    user.CountryOfOrigin = request.CountryOfOrigin.Trim();
+    user.EducationalInstitute = request.EducationalInstitute.Trim();
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ApiResponse(true, "Profile updated successfully."));
+});
+
+app.MapPut("/api/user/change-password", async (ChangePasswordRequest request, AppDbContext db) =>
+{
+    string email = request.Email.Trim().ToLower();
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+    if (user == null)
+    {
+        return Results.NotFound(new ApiResponse(false, "User not found."));
+    }
+
+    if (string.IsNullOrWhiteSpace(request.CurrentPassword) ||
+        string.IsNullOrWhiteSpace(request.NewPassword))
+    {
+        return Results.BadRequest(new ApiResponse(false, "Please fill in all fields."));
+    }
+
+    bool currentOk = BCrypt.Net.BCrypt.Verify(request.CurrentPassword, user.PasswordHash);
+
+    if (!currentOk)
+    {
+        return Results.BadRequest(new ApiResponse(false, "Current password is incorrect."));
+    }
+
+    if (request.NewPassword.Length < 6)
+    {
+        return Results.BadRequest(new ApiResponse(false, "New password must be at least 6 characters."));
+    }
+
+    if (request.CurrentPassword == request.NewPassword)
+    {
+        return Results.BadRequest(new ApiResponse(false, "New password cannot be the same as the current one."));
+    }
+
+    user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ApiResponse(true, "Password changed successfully."));
+});
+
+app.Run();
+
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
+    {
+    }
+
+    public DbSet<UserEntity> Users => Set<UserEntity>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<UserEntity>().ToTable("users");
+
+        modelBuilder.Entity<UserEntity>().HasKey(u => u.Id);
+
+        modelBuilder.Entity<UserEntity>().Property(u => u.Id).HasColumnName("id");
+        modelBuilder.Entity<UserEntity>().Property(u => u.FirstName).HasColumnName("first_name");
+        modelBuilder.Entity<UserEntity>().Property(u => u.LastName).HasColumnName("last_name");
+        modelBuilder.Entity<UserEntity>().Property(u => u.Email).HasColumnName("email");
+        modelBuilder.Entity<UserEntity>().Property(u => u.PasswordHash).HasColumnName("password_hash");
+        modelBuilder.Entity<UserEntity>().Property(u => u.Class).HasColumnName("class");
+        modelBuilder.Entity<UserEntity>().Property(u => u.Profile).HasColumnName("profile");
+        modelBuilder.Entity<UserEntity>().Property(u => u.CountryOfOrigin).HasColumnName("country_of_origin");
+        modelBuilder.Entity<UserEntity>().Property(u => u.EducationalInstitute).HasColumnName("educational_institute");
+        modelBuilder.Entity<UserEntity>().Property(u => u.CreatedAt).HasColumnName("created_at");
+
+        modelBuilder.Entity<UserEntity>().HasIndex(u => u.Email).IsUnique();
+    }
+}
+
+public class UserEntity
+{
+    public int Id { get; set; }
+    public string FirstName { get; set; } = "";
+    public string LastName { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string PasswordHash { get; set; } = "";
+    public string Class { get; set; } = "";
+    public string Profile { get; set; } = "";
+    public string CountryOfOrigin { get; set; } = "";
+    public string EducationalInstitute { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+}
+
+public record RegisterRequest(
+    string FirstName,
+    string LastName,
+    string Email,
+    string Password,
+    string Class,
+    string Profile,
+    string CountryOfOrigin,
+    string EducationalInstitute
+);
+
+public record LoginRequest(
+    string Email,
+    string Password
+);
+
+public record UpdateUserRequest(
+    string FirstName,
+    string LastName,
+    string Email,
+    string Class,
+    string Profile,
+    string CountryOfOrigin,
+    string EducationalInstitute
+);
+
+public record ChangePasswordRequest(
+    string Email,
+    string CurrentPassword,
+    string NewPassword
+);
+
+public record UserDto(
+    string FirstName,
+    string LastName,
+    string Email,
+    string Password,
+    string Class,
+    string Profile,
+    string CountryOfOrigin,
+    string EducationalInstitute
+);
+
+public record ApiResponse(
+    bool Success,
+    string Message
+);
