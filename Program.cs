@@ -189,6 +189,89 @@ app.MapPut("/api/user/change-password", async (ChangePasswordRequest request, Ap
     return Results.Ok(new ApiResponse(true, "Password changed successfully."));
 });
 
+app.MapGet("/api/reminders/{email}", async (string email, AppDbContext db) =>
+{
+    email = email.Trim().ToLower();
+    DateTime today = DateTime.UtcNow.Date;
+
+    var reminders = await db.Reminders
+        .Where(r => r.UserEmail == email && r.ReminderDate >= today)
+        .OrderBy(r => r.ReminderDate)
+        .ThenBy(r => r.Id)
+        .Select(r => new ReminderDto(
+            r.Id,
+            r.UserEmail,
+            r.ReminderDate,
+            r.Title,
+            r.Description ?? ""
+        ))
+        .ToListAsync();
+
+    return Results.Ok(reminders);
+});
+
+app.MapPost("/api/reminders", async (CreateReminderRequest request, AppDbContext db) =>
+{
+    string email = request.UserEmail.Trim().ToLower();
+    string title = request.Title.Trim();
+    string description = request.Description?.Trim() ?? "";
+
+    if (string.IsNullOrWhiteSpace(email) ||
+        string.IsNullOrWhiteSpace(title))
+    {
+        return Results.BadRequest(new ApiResponse(false, "Reminder title is required."));
+    }
+
+    var reminder = new ReminderEntity
+    {
+        UserEmail = email,
+        ReminderDate = request.ReminderDate.Date,
+        Title = title,
+        Description = description,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    db.Reminders.Add(reminder);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ReminderDto(
+        reminder.Id,
+        reminder.UserEmail,
+        reminder.ReminderDate,
+        reminder.Title,
+        reminder.Description ?? ""
+    ));
+});
+
+app.MapDelete("/api/reminders/{id:int}", async (int id, AppDbContext db) =>
+{
+    var reminder = await db.Reminders.FirstOrDefaultAsync(r => r.Id == id);
+
+    if (reminder == null)
+    {
+        return Results.NotFound(new ApiResponse(false, "Reminder not found."));
+    }
+
+    db.Reminders.Remove(reminder);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ApiResponse(true, "Reminder deleted."));
+});
+
+app.MapDelete("/api/reminders/clear/{email}", async (string email, AppDbContext db) =>
+{
+    email = email.Trim().ToLower();
+
+    var reminders = await db.Reminders
+        .Where(r => r.UserEmail == email)
+        .ToListAsync();
+
+    db.Reminders.RemoveRange(reminders);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ApiResponse(true, "All reminders cleared."));
+});
+
 app.Run();
 
 public class AppDbContext : DbContext
@@ -198,6 +281,7 @@ public class AppDbContext : DbContext
     }
 
     public DbSet<UserEntity> Users => Set<UserEntity>();
+    public DbSet<ReminderEntity> Reminders => Set<ReminderEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -217,6 +301,17 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<UserEntity>().Property(u => u.CreatedAt).HasColumnName("created_at");
 
         modelBuilder.Entity<UserEntity>().HasIndex(u => u.Email).IsUnique();
+
+	modelBuilder.Entity<ReminderEntity>().ToTable("reminders");
+
+	modelBuilder.Entity<ReminderEntity>().HasKey(r => r.Id);
+
+	modelBuilder.Entity<ReminderEntity>().Property(r => r.Id).HasColumnName("id");
+	modelBuilder.Entity<ReminderEntity>().Property(r => r.UserEmail).HasColumnName("user_email");
+	modelBuilder.Entity<ReminderEntity>().Property(r => r.ReminderDate).HasColumnName("reminder_date");
+	modelBuilder.Entity<ReminderEntity>().Property(r => r.Title).HasColumnName("title");
+	modelBuilder.Entity<ReminderEntity>().Property(r => r.Description).HasColumnName("description");
+	modelBuilder.Entity<ReminderEntity>().Property(r => r.CreatedAt).HasColumnName("created_at");
     }
 }
 
@@ -280,4 +375,29 @@ public record UserDto(
 public record ApiResponse(
     bool Success,
     string Message
+);
+
+public class ReminderEntity
+{
+    public int Id { get; set; }
+    public string UserEmail { get; set; } = "";
+    public DateTime ReminderDate { get; set; }
+    public string Title { get; set; } = "";
+    public string? Description { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public record CreateReminderRequest(
+    string UserEmail,
+    DateTime ReminderDate,
+    string Title,
+    string Description
+);
+
+public record ReminderDto(
+    int Id,
+    string UserEmail,
+    DateTime ReminderDate,
+    string Title,
+    string Description
 );
