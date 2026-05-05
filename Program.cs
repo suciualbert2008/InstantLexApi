@@ -232,39 +232,59 @@ app.MapGet("/api/reminders/{email}", async (string email, AppDbContext db) =>
     return Results.Ok(reminders);
 });
 
-app.MapPost("/api/reminders", async (CreateReminderRequest request, AppDbContext db) =>
+app.MapPost("/api/reminders", async (CreateReminderRequest? request, AppDbContext db) =>
 {
-    string email = request.UserEmail.Trim().ToLower();
-    string title = request.Title.Trim();
-    string description = request.Description?.Trim() ?? "";
-
-    if (string.IsNullOrWhiteSpace(email) ||
-        string.IsNullOrWhiteSpace(title))
+    try
     {
-        return Results.BadRequest(new ApiResponse(false, "Reminder title is required."));
+        if (request == null)
+        {
+            return Results.BadRequest(new ApiResponse(false, "Invalid reminder data."));
+        }
+
+        string email = request.UserEmail?.Trim().ToLower() ?? "";
+        string title = request.Title?.Trim() ?? "";
+        string description = request.Description?.Trim() ?? "";
+
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            return Results.BadRequest(new ApiResponse(false, "User email is required."));
+        }
+
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return Results.BadRequest(new ApiResponse(false, "Reminder title is required."));
+        }
+
+        if (request.ReminderDate == default)
+        {
+            return Results.BadRequest(new ApiResponse(false, "Reminder date is required."));
+        }
+
+        var reminder = new ReminderEntity
+        {
+            UserEmail = email,
+            ReminderDate = request.ReminderDate.Date,
+            Title = title,
+            Description = description,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        db.Reminders.Add(reminder);
+        await db.SaveChangesAsync();
+
+        return Results.Ok(new ReminderDto(
+            reminder.Id,
+            reminder.UserEmail,
+            reminder.ReminderDate,
+            reminder.Title,
+            reminder.Description ?? ""
+        ));
     }
-
-    var reminder = new ReminderEntity
+    catch (Exception ex)
     {
-        UserEmail = email,
-        ReminderDate = request.ReminderDate.Date,
-        Title = title,
-        Description = description,
-        CreatedAt = DateTime.UtcNow
-    };
-
-    db.Reminders.Add(reminder);
-    await db.SaveChangesAsync();
-
-    return Results.Ok(new ReminderDto(
-        reminder.Id,
-        reminder.UserEmail,
-        reminder.ReminderDate,
-        reminder.Title,
-        reminder.Description ?? ""
-    ));
+        return Results.Problem(ex.ToString());
+    }
 });
-
 app.MapDelete("/api/reminders/{id:int}", async (int id, AppDbContext db) =>
 {
     var reminder = await db.Reminders.FirstOrDefaultAsync(r => r.Id == id);
