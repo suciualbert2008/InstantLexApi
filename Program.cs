@@ -139,9 +139,10 @@ app.MapPost("/api/auth/login", async (LoginRequest request, AppDbContext db) =>
 
 app.MapPut("/api/user/update", async (UpdateUserRequest request, AppDbContext db) =>
 {
-    string email = request.Email.Trim().ToLower();
+    string originalEmail = request.OriginalEmail.Trim().ToLower();
+    string newEmail = request.Email.Trim().ToLower();
 
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == originalEmail);
 
     if (user == null)
     {
@@ -150,6 +151,7 @@ app.MapPut("/api/user/update", async (UpdateUserRequest request, AppDbContext db
 
     if (string.IsNullOrWhiteSpace(request.FirstName) ||
         string.IsNullOrWhiteSpace(request.LastName) ||
+        string.IsNullOrWhiteSpace(newEmail) ||
         string.IsNullOrWhiteSpace(request.Class) ||
         string.IsNullOrWhiteSpace(request.Profile) ||
         string.IsNullOrWhiteSpace(request.CountryOfOrigin) ||
@@ -158,18 +160,45 @@ app.MapPut("/api/user/update", async (UpdateUserRequest request, AppDbContext db
         return Results.BadRequest(new ApiResponse(false, "Please fill in all mandatory fields."));
     }
 
+    if (!newEmail.Contains("@"))
+    {
+        return Results.BadRequest(new ApiResponse(false, "Please enter a valid email address."));
+    }
+
+    if (newEmail != originalEmail)
+    {
+        bool emailAlreadyUsed = await db.Users.AnyAsync(u => u.Email == newEmail);
+
+        if (emailAlreadyUsed)
+        {
+            return Results.Conflict(new ApiResponse(false, "This email is already used by another account."));
+        }
+    }
+
     user.FirstName = request.FirstName.Trim();
     user.LastName = request.LastName.Trim();
+    user.Email = newEmail;
     user.Class = request.Class.Trim();
     user.Profile = request.Profile.Trim();
     user.CountryOfOrigin = request.CountryOfOrigin.Trim();
     user.EducationalInstitute = request.EducationalInstitute.Trim();
 
+    if (newEmail != originalEmail)
+    {
+        var reminders = await db.Reminders
+            .Where(r => r.UserEmail == originalEmail)
+            .ToListAsync();
+
+        foreach (var reminder in reminders)
+        {
+            reminder.UserEmail = newEmail;
+        }
+    }
+
     await db.SaveChangesAsync();
 
     return Results.Ok(new ApiResponse(true, "Profile updated successfully."));
 });
-
 app.MapPut("/api/user/change-password", async (ChangePasswordRequest request, AppDbContext db) =>
 {
     string email = request.Email.Trim().ToLower();
@@ -442,6 +471,7 @@ public record LoginRequest(
 );
 
 public record UpdateUserRequest(
+    string OriginalEmail,
     string FirstName,
     string LastName,
     string Email,
