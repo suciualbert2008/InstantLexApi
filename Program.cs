@@ -211,6 +211,29 @@ app.MapPut("/api/user/change-password", async (ChangePasswordRequest request, Ap
     return Results.Ok(new ApiResponse(true, "Password changed successfully."));
 });
 
+app.MapDelete("/api/user/delete/{email}", async (string email, AppDbContext db) =>
+{
+    email = email.Trim().ToLower();
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+
+    if (user == null)
+    {
+        return Results.NotFound(new ApiResponse(false, "User not found."));
+    }
+
+    var reminders = await db.Reminders
+        .Where(r => r.UserEmail == email)
+        .ToListAsync();
+
+    db.Reminders.RemoveRange(reminders);
+    db.Users.Remove(user);
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ApiResponse(true, "Account and reminders deleted successfully."));
+});
+
 app.MapGet("/api/reminders/{email}", async (string email, AppDbContext db) =>
 {
     email = email.Trim().ToLower();
