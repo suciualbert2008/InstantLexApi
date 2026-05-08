@@ -21,6 +21,40 @@ var app = builder.Build();
 
 app.UseCors("AllowInstantLex");
 
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.ExecuteSqlRawAsync("""
+        CREATE TABLE IF NOT EXISTS courses (
+            id SERIAL PRIMARY KEY,
+            user_email TEXT NOT NULL,
+            course_name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_courses_user_course
+            ON courses (user_email, course_name);
+
+        CREATE INDEX IF NOT EXISTS ix_courses_user_email
+            ON courses (user_email);
+
+        CREATE TABLE IF NOT EXISTS course_grade_data (
+            id SERIAL PRIMARY KEY,
+            user_email TEXT NOT NULL,
+            course_name TEXT NOT NULL,
+            grades_json TEXT NOT NULL DEFAULT '[]',
+            absence_dates_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_course_grade_data_user_course
+            ON course_grade_data (user_email, course_name);
+
+        CREATE INDEX IF NOT EXISTS ix_course_grade_data_user_email
+            ON course_grade_data (user_email);
+        """);
+}
+
 app.MapGet("/", () => "InstantLex API is running.");
 
 app.MapGet("/api/test-db", async (AppDbContext db) =>
@@ -30,13 +64,17 @@ app.MapGet("/api/test-db", async (AppDbContext db) =>
         bool canConnect = await db.Database.CanConnectAsync();
         int userCount = await db.Users.CountAsync();
         int reminderCount = await db.Reminders.CountAsync();
+        int courseCount = await db.Courses.CountAsync();
+        int courseGradeDataCount = await db.CourseGradeData.CountAsync();
 
         return Results.Ok(new
         {
             success = true,
             canConnect,
             userCount,
-            reminderCount
+            reminderCount,
+            courseCount,
+            courseGradeDataCount
         });
     }
     catch (Exception ex)
@@ -193,6 +231,24 @@ app.MapPut("/api/user/update", async (UpdateUserRequest request, AppDbContext db
         {
             reminder.UserEmail = newEmail;
         }
+
+        var courses = await db.Courses
+            .Where(c => c.UserEmail == originalEmail)
+            .ToListAsync();
+
+        foreach (var course in courses)
+        {
+            course.UserEmail = newEmail;
+        }
+
+        var gradeData = await db.CourseGradeData
+            .Where(g => g.UserEmail == originalEmail)
+            .ToListAsync();
+
+        foreach (var data in gradeData)
+        {
+            data.UserEmail = newEmail;
+        }
     }
 
     await db.SaveChangesAsync();
@@ -255,12 +311,161 @@ app.MapDelete("/api/user/delete/{email}", async (string email, AppDbContext db) 
         .Where(r => r.UserEmail == email)
         .ToListAsync();
 
+    var courses = await db.Courses
+        .Where(c => c.UserEmail == email)
+        .ToListAsync();
+
+    var gradeData = await db.CourseGradeData
+        .Where(g => g.UserEmail == email)
+        .ToListAsync();
+
     db.Reminders.RemoveRange(reminders);
+    db.Courses.RemoveRange(courses);
+    db.CourseGradeData.RemoveRange(gradeData);
     db.Users.Remove(user);
 
     await db.SaveChangesAsync();
 
     return Results.Ok(new ApiResponse(true, "Account and reminders deleted successfully."));
+});
+
+app.MapGet("/api/courses/{email}", async (string email, AppDbContext db) =>
+{
+    email = email.Trim().ToLower();
+
+    var courses = await db.Courses
+        .Where(c => c.UserEmail == email)
+        .OrderBy(c => c.CourseName)
+        .Select(c => c.CourseName)
+        .ToListAsync();
+
+    return Results.Ok(courses);
+});
+
+app.MapPut("/api/courses/{email}", async (string email, SaveCoursesRequest request, AppDbContext db) =>
+{
+    email = email.Trim().ToLower();
+
+    var existing = await db.Courses
+        .Where(c => c.UserEmail == email)
+        .ToListAsync();
+
+    db.Courses.RemoveRange(existing);
+
+    var courseNames = (request.Courses ?? new List<string>())
+        .Select(c => c.Trim())
+        .Where(c => !string.IsNullOrWhiteSpace(c))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(c => c)
+        .ToList();
+
+    foreach (string courseName in courseNames)
+    {
+        db.Courses.Add(new CourseEntity
+        {
+            UserEmail = email,
+            CourseName = courseName,
+            CreatedAt = DateTime.UtcNow
+        });
+    }
+
+    var gradeData = await db.CourseGradeData
+        .Where(g => g.UserEmail == email)
+        .ToListAsync();
+
+    foreach (var data in gradeData.Where(g => !courseNames.Contains(g.CourseName, StringComparer.OrdinalIgnoreCase)).ToList())
+    {
+        db.CourseGradeData.Remove(data);
+    }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(courseNames);
+});
+
+app.MapGet("/api/grades/{email}", async (string email, AppDbContext db) =>
+{
+    email = email.Trim().ToLower();
+
+    var rows = await db.CourseGradeData
+        .Where(g => g.UserEmail == email)
+        .OrderBy(g => g.CourseName)
+        .ToListAsync();
+
+    var result = new Dictionary<string, CourseGradeDataDto>();
+
+    foreach (var row in rows)
+    {
+        result[row.CourseName] = new CourseGradeDataDto(
+            JsonHelpers.DeserializeList<double>(row.GradesJson),
+            JsonHelpers.DeserializeList<string>(row.AbsenceDatesJson)
+        );
+    }
+
+    return Results.Ok(result);
+});
+
+app.MapPut("/api/grades/{email}", async (string email, Dictionary<string, CourseGradeDataDto>? request, AppDbContext db) =>
+{
+    email = email.Trim().ToLower();
+    request ??= new Dictionary<string, CourseGradeDataDto>();
+
+    var existing = await db.CourseGradeData
+        .Where(g => g.UserEmail == email)
+        .ToListAsync();
+
+    db.CourseGradeData.RemoveRange(existing);
+
+    foreach (var pair in request)
+    {
+        string courseName = pair.Key.Trim();
+
+        if (string.IsNullOrWhiteSpace(courseName))
+            continue;
+
+        var grades = pair.Value?.Grades ?? new List<double>();
+        var absenceDates = pair.Value?.AbsenceDates ?? new List<string>();
+
+        db.CourseGradeData.Add(new CourseGradeDataEntity
+        {
+            UserEmail = email,
+            CourseName = courseName,
+            GradesJson = System.Text.Json.JsonSerializer.Serialize(grades),
+            AbsenceDatesJson = System.Text.Json.JsonSerializer.Serialize(absenceDates),
+            UpdatedAt = DateTime.UtcNow
+        });
+
+        bool hasCourse = await db.Courses.AnyAsync(c => c.UserEmail == email && c.CourseName == courseName);
+
+        if (!hasCourse)
+        {
+            db.Courses.Add(new CourseEntity
+            {
+                UserEmail = email,
+                CourseName = courseName,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+    }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ApiResponse(true, "Grade data saved."));
+});
+
+app.MapDelete("/api/grades/{email}", async (string email, string courseName, AppDbContext db) =>
+{
+    email = email.Trim().ToLower();
+    courseName = courseName.Trim();
+
+    var rows = await db.CourseGradeData
+        .Where(g => g.UserEmail == email && g.CourseName == courseName)
+        .ToListAsync();
+
+    db.CourseGradeData.RemoveRange(rows);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new ApiResponse(true, "Course grade data deleted."));
 });
 
 app.MapGet("/api/reminders/{email}", async (string email, AppDbContext db) =>
@@ -385,6 +590,8 @@ public class AppDbContext : DbContext
 
     public DbSet<UserEntity> Users => Set<UserEntity>();
     public DbSet<ReminderEntity> Reminders => Set<ReminderEntity>();
+    public DbSet<CourseEntity> Courses => Set<CourseEntity>();
+    public DbSet<CourseGradeDataEntity> CourseGradeData => Set<CourseGradeDataEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -427,6 +634,26 @@ modelBuilder.Entity<ReminderEntity>()
 
 modelBuilder.Entity<ReminderEntity>().HasIndex(r => r.UserEmail);
 modelBuilder.Entity<ReminderEntity>().HasIndex(r => new { r.UserEmail, r.ReminderDate });
+
+        modelBuilder.Entity<CourseEntity>().ToTable("courses");
+        modelBuilder.Entity<CourseEntity>().HasKey(c => c.Id);
+        modelBuilder.Entity<CourseEntity>().Property(c => c.Id).HasColumnName("id");
+        modelBuilder.Entity<CourseEntity>().Property(c => c.UserEmail).HasColumnName("user_email");
+        modelBuilder.Entity<CourseEntity>().Property(c => c.CourseName).HasColumnName("course_name");
+        modelBuilder.Entity<CourseEntity>().Property(c => c.CreatedAt).HasColumnName("created_at").HasColumnType("timestamp with time zone");
+        modelBuilder.Entity<CourseEntity>().HasIndex(c => new { c.UserEmail, c.CourseName }).IsUnique();
+        modelBuilder.Entity<CourseEntity>().HasIndex(c => c.UserEmail);
+
+        modelBuilder.Entity<CourseGradeDataEntity>().ToTable("course_grade_data");
+        modelBuilder.Entity<CourseGradeDataEntity>().HasKey(g => g.Id);
+        modelBuilder.Entity<CourseGradeDataEntity>().Property(g => g.Id).HasColumnName("id");
+        modelBuilder.Entity<CourseGradeDataEntity>().Property(g => g.UserEmail).HasColumnName("user_email");
+        modelBuilder.Entity<CourseGradeDataEntity>().Property(g => g.CourseName).HasColumnName("course_name");
+        modelBuilder.Entity<CourseGradeDataEntity>().Property(g => g.GradesJson).HasColumnName("grades_json");
+        modelBuilder.Entity<CourseGradeDataEntity>().Property(g => g.AbsenceDatesJson).HasColumnName("absence_dates_json");
+        modelBuilder.Entity<CourseGradeDataEntity>().Property(g => g.UpdatedAt).HasColumnName("updated_at").HasColumnType("timestamp with time zone");
+        modelBuilder.Entity<CourseGradeDataEntity>().HasIndex(g => new { g.UserEmail, g.CourseName }).IsUnique();
+        modelBuilder.Entity<CourseGradeDataEntity>().HasIndex(g => g.UserEmail);
     }
 }
 
@@ -452,6 +679,24 @@ public class ReminderEntity
     public string Title { get; set; } = "";
     public string? Description { get; set; }
     public DateTime CreatedAt { get; set; }
+}
+
+public class CourseEntity
+{
+    public int Id { get; set; }
+    public string UserEmail { get; set; } = "";
+    public string CourseName { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class CourseGradeDataEntity
+{
+    public int Id { get; set; }
+    public string UserEmail { get; set; } = "";
+    public string CourseName { get; set; } = "";
+    public string GradesJson { get; set; } = "[]";
+    public string AbsenceDatesJson { get; set; } = "[]";
+    public DateTime UpdatedAt { get; set; }
 }
 
 public record RegisterRequest(
@@ -513,7 +758,31 @@ public record ReminderDto(
     string Description
 );
 
+public record SaveCoursesRequest(
+    List<string>? Courses
+);
+
+public record CourseGradeDataDto(
+    List<double> Grades,
+    List<string> AbsenceDates
+);
+
 public record ApiResponse(
     bool Success,
     string Message
 );
+
+public static class JsonHelpers
+{
+    public static List<T> DeserializeList<T>(string json)
+    {
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<T>>(json) ?? new List<T>();
+        }
+        catch
+        {
+            return new List<T>();
+        }
+    }
+}
